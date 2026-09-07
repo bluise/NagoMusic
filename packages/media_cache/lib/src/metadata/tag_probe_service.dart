@@ -1195,7 +1195,8 @@ class TagProbeService {
                   window.removeFirst();
                 } else {
                   final trim = windowBytes - maxBytes;
-                  window.first = front.sublist(trim);
+                  window.removeFirst();
+                  window.addFirst(front.sublist(trim));
                   windowBytes = maxBytes;
                   break;
                 }
