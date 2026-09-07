@@ -34,7 +34,14 @@ class LyricsRepository {
   Future<String?> loadLrc(SongEntity song) async {
     final embedded = await _readFromEmbeddedTags(song);
     if (embedded != null && embedded.trim().isNotEmpty) {
-      await _writeToCache(song.id, embedded);
+      // 写缓存但不发通知：loadLrc 是读取入口，发通知会触发
+      // LyricsService._onLyricsCacheChanged → _loadForSong(force: true)，
+      // 而 _loadForSong 又调 loadLrc → 再写缓存 → 再通知 → 无限重载。
+      // 本地歌每轮都能从内嵌标签读到歌词，于是死循环，歌词页永远卡在
+      // loading。WebDAV 歌不受影响（_readFromEmbeddedTags 直接返回
+      // null，走缓存读取不触发写）。缓存的填充改由 SongMetadataPersister
+      // 的 saveLrcToCache 负责，那里发通知是合理的（仅触发一次重载）。
+      await _writeToCache(song.id, embedded, notify: false);
       return embedded;
     }
 
@@ -45,7 +52,7 @@ class LyricsRepository {
 
     final local = await _readFromLocalSidecar(song);
     if (local != null && local.trim().isNotEmpty) {
-      await _writeToCache(song.id, local);
+      await _writeToCache(song.id, local, notify: false);
       return local;
     }
     return null;
@@ -139,6 +146,7 @@ class LyricsRepository {
     String songId,
     String content, {
     String extension = 'lrc',
+    bool notify = true,
   }) async {
     try {
       final dir = await getApplicationSupportDirectory();
@@ -150,7 +158,7 @@ class LyricsRepository {
         p.join(lyricsDir.path, '${fnv1a64Hex(songId)}.$extension'),
       );
       await file.writeAsString(content, flush: true);
-      _notifyChanged(songId);
+      if (notify) _notifyChanged(songId);
     } catch (e, s) {
       AppLog.instance.w(_logTag, '写入歌词缓存失败 songId=$songId', e, s);
     }
