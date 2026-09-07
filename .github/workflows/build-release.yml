@@ -24,25 +24,10 @@ jobs:
           java-version: "17"
       - run: flutter pub get
       - run: flutter build apk --debug --split-per-abi
-      - run: |
-          FULL_VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
-          VERSION=${FULL_VERSION%%+*}
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-      - run: |
-          git log -1 --pretty=format:"- %s%n%b" > release_notes.txt
-          if [ ! -s release_notes.txt ]; then
-            echo "- ${GITHUB_SHA}" > release_notes.txt
-          fi
-      - run: |
-          mv build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk nagomusic-v${VERSION}-arm64-v8a.apk
-          mv build/app/outputs/flutter-apk/app-armeabi-v7a-debug.apk nagomusic-v${VERSION}-armeabi-v7a.apk
-          mv build/app/outputs/flutter-apk/app-x86_64-debug.apk nagomusic-v${VERSION}-x86_64.apk
-      - uses: softprops/action-gh-release@v2
+
+      # 上传产物到当前Actions任务的Artifacts（直接在这里下载，不用Release）
+      - name: Upload debug apk artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v${{ env.VERSION }}
-          name: v${{ env.VERSION }}
-          body_path: release_notes.txt
-          files: |
-            nagomusic-v${{ env.VERSION }}-arm64-v8a.apk
-            nagomusic-v${{ env.VERSION }}-armeabi-v7a.apk
-            nagomusic-v${{ env.VERSION }}-x86_64.apk
+          name: nagomusic-debug-apk
+          path: build/app/outputs/flutter-apk/*.apk
