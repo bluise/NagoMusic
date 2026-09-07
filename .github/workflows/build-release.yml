@@ -31,7 +31,7 @@ jobs:
             echo "ANDROID_KEYSTORE_BASE64 is missing"
             exit 1
           fi
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
 
@@ -41,7 +41,7 @@ jobs:
       - name: Build release apk
         run: flutter build apk --release --split-per-abi
         env:
-          SIGNING_STORE_FILE: android/app/release.keystore
+          SIGNING_STORE_FILE: ${{ github.workspace }}/release.keystore
           SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
