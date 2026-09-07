@@ -1,15 +1,12 @@
 name: build-release
-
 on:
   push:
     branches:
       - main
       - master
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
   build-android:
     runs-on: ubuntu-latest
@@ -18,14 +15,18 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-      - run: |
+
+      - name: Decode keystore
+        run: |
           if [ -z "${ANDROID_KEYSTORE_BASE64}" ]; then
             echo "ANDROID_KEYSTORE_BASE64 is missing"
             exit 1
@@ -33,27 +34,39 @@ jobs:
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      - run: flutter pub get
-      - run: flutter build apk --release --split-per-abi
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build release apk
+        run: flutter build apk --release --split-per-abi
         env:
-          SIGNING_STORE_FILE: release.keystore
+          SIGNING_STORE_FILE: android/app/release.keystore
           SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      - run: |
+
+      - name: Parse version from pubspec.yaml
+        run: |
           FULL_VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
           VERSION=${FULL_VERSION%%+*}
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-      - run: |
+
+      - name: Generate release notes
+        run: |
           git log -1 --pretty=format:"- %s%n%b" > release_notes.txt
           if [ ! -s release_notes.txt ]; then
             echo "- ${GITHUB_SHA}" > release_notes.txt
           fi
-      - run: |
+
+      - name: Rename apks
+        run: |
           mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk nagomusic-v${VERSION}-arm64-v8a.apk
           mv build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk nagomusic-v${VERSION}-armeabi-v7a.apk
           mv build/app/outputs/flutter-apk/app-x86_64-release.apk nagomusic-v${VERSION}-x86_64.apk
-      - uses: softprops/action-gh-release@v2
+
+      - name: Github Release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
           name: v${{ env.VERSION }}
