@@ -14,15 +14,6 @@ class LyricsRepository {
 
   static final StreamController<String> _changes =
       StreamController<String>.broadcast();
-
-  /// 某首歌的歌词缓存真的变了（写入或删除）时发出它的 songId。
-  ///
-  /// 所有写歌词的路径都经过这个类（播放时的内嵌标签刮削、B 站字幕、在线匹配、
-  /// 手动清除），所以这里是唯一可靠的通知点。
-  ///
-  /// `LyricsService` 订阅它来决定要不要重新加载 —— 否则它没办法区分「currentSong
-  /// 只是换了个新实例」和「歌词真的变了」，只能每次都重载，那就是歌词页闪烁的
-  /// 根源。
   static Stream<String> get changes => _changes.stream;
 
   static void _notifyChanged(String songId) {
