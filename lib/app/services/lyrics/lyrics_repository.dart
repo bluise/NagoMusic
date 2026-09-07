@@ -25,13 +25,6 @@ class LyricsRepository {
   Future<String?> loadLrc(SongEntity song) async {
     final embedded = await _readFromEmbeddedTags(song);
     if (embedded != null && embedded.trim().isNotEmpty) {
-      // 写缓存但不发通知：loadLrc 是读取入口，发通知会触发
-      // LyricsService._onLyricsCacheChanged → _loadForSong(force: true)，
-      // 而 _loadForSong 又调 loadLrc → 再写缓存 → 再通知 → 无限重载。
-      // 本地歌每轮都能从内嵌标签读到歌词，于是死循环，歌词页永远卡在
-      // loading。WebDAV 歌不受影响（_readFromEmbeddedTags 直接返回
-      // null，走缓存读取不触发写）。缓存的填充改由 SongMetadataPersister
-      // 的 saveLrcToCache 负责，那里发通知是合理的（仅触发一次重载）。
       await _writeToCache(song.id, embedded, notify: false);
       return embedded;
     }
@@ -59,19 +52,10 @@ class LyricsRepository {
     } catch (e, s) {
       AppLog.instance.w(_logTag, '删除歌词缓存失败 songId=$songId', e, s);
     }
-    // 逐字歌词是同一份歌词的另一种形态，清歌词就得连它一起清；留着的话
-    // 「清除」之后播放页还会拿旧的逐字词显示。
     await removeCachedYrc(songId);
   }
 
-  // ------------------------------------------------------------ 逐字歌词缓存
-  //
-  // 和普通 LRC 分开存：yrc 不带翻译，翻译仍然只在 `.lrc` 那份里。加载时两份都
-  // 读，用 yrc 的逐字时间 + lrc 的翻译拼出最终模型。
-
   Future<void> saveYrcToCache(String songId, String content) async {
-    // 和 saveLrcToCache 一样先剥掉 BOM，否则第一行的 `[` 前面多一个不可见字符，
-    // 行头正则匹配不上，整份逐字歌词会被当成空的。
     final c = content.replaceFirst('﻿', '').trim();
     if (c.isEmpty) return;
     await _writeToCache(songId, c, extension: 'yrc');
