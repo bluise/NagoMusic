@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:io';
 
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
@@ -35,10 +34,7 @@ class TagProbeService {
   };
 
   final AudioCacheService _audioCache = AudioCacheService.instance;
-  final List<ProbeHandler> _probeHandlers = [
-    ProgressiveHeadHandler(),
-    ProgressiveTailHandler(),
-  ];
+  final List<ProbeHandler> _probeHandlers = [ProgressiveHeadHandler()];
   Future<Directory>? _supportDirectoryFuture;
 
   static final Map<String, Future<TagProbeResult?>> _inflight = {};
@@ -349,8 +345,6 @@ class TagProbeService {
           prober: _probeFromFile,
           downloadPartial: (maxBytes) =>
               _downloadPartialCached(uri, headers: headers, maxBytes: maxBytes),
-          downloadTail: (maxBytes) =>
-              _downloadTailCached(uri, headers: headers, maxBytes: maxBytes),
         );
         if (res != null) return res;
       }
@@ -374,45 +368,20 @@ class TagProbeService {
         ? null
         : await _probeFromFile(head, includeArtwork: false);
 
-    // WAV stores its ID3 block at the end of the file. A 2 MB tail covers the
-    // vast majority of cases, but a high-res cover can push the ID3 block past
-    // that — grow the tail exponentially until the artwork surfaces or we hit
-    // the whole file.
-    const tailSteps = <int>[
-      2 * 1024 * 1024,
-      4 * 1024 * 1024,
-      8 * 1024 * 1024,
-      16 * 1024 * 1024,
-    ];
-    final tailLimit = (totalBytes != null && totalBytes > 0)
-        ? totalBytes
-        : 32 * 1024 * 1024;
-
-    TagProbeResult? tailResult;
-    File? tailFile;
-    for (final maxBytes in tailSteps) {
-      if (maxBytes > tailLimit) break;
-      final tail = await _downloadTailCached(
-        uri,
-        headers: headers,
-        maxBytes: maxBytes,
-      );
-      if (tail == null) break;
-      tailFile = tail;
-      final parsed = await _probeFromFile(tail, includeArtwork: includeArtwork);
-      if (parsed != null) {
-        tailResult = parsed;
-        if (!includeArtwork) break;
-        if ((parsed.artwork?.isNotEmpty ?? false)) break;
-      }
-      if (totalBytes != null && maxBytes >= totalBytes) break;
-    }
+    final tail = await _downloadTailCached(
+      uri,
+      headers: headers,
+      maxBytes: 2 * 1024 * 1024,
+    );
+    final tailResult = tail == null
+        ? null
+        : await _probeFromFile(tail, includeArtwork: includeArtwork);
 
     final merged = _mergeProbeResults(tailResult, headResult);
     if (merged == null) return null;
     return _normalizeRemoteResult(
       uri: uri,
-      file: tailFile ?? head!,
+      file: tail ?? head!,
       totalBytes: totalBytes,
       parsed: merged,
     );
@@ -801,24 +770,6 @@ class TagProbeService {
     }
   }
 
-  /// Reads the last [maxBytes] bytes from [file] without loading the whole
-  /// file into memory. Returns null on any IO failure.
-  Future<Uint8List?> _readTailBytes(File file, int maxBytes) async {
-    try {
-      final raf = await file.open(mode: FileMode.read);
-      try {
-        final size = await raf.length();
-        final start = size > maxBytes ? size - maxBytes : 0;
-        await raf.setPosition(start);
-        return await raf.read(size - start);
-      } finally {
-        await raf.close();
-      }
-    } catch (_) {
-      return null;
-    }
-  }
-
   Future<File?> _existingAudioCacheTempFile(
     Uri uri, {
     Map<String, String>? headers,
@@ -1048,39 +999,7 @@ class TagProbeService {
         headers: headers,
         tail: true,
       );
-      // A previously cached tail might be smaller than what we need now (the
-      // progressive handler keeps growing the request). Reuse it only when it
-      // already covers the requested range; otherwise overwrite with a bigger
-      // grab.
-      if (existing != null) {
-        final existingSize = await existing.length();
-        if (existingSize >= maxBytes) return existing;
-      }
-
-      // If the head cache already holds enough bytes (e.g. a previous tail
-      // request on a no-range server saved the complete file there), slice the
-      // last `maxBytes` out of it instead of hitting the network again.
-      final headCache = await _existingRemoteCacheFile(uri, headers: headers);
-      if (headCache != null) {
-        final headSize = await headCache.length();
-        if (headSize >= maxBytes) {
-          final tailBytes = await _readTailBytes(headCache, maxBytes);
-          if (tailBytes != null && tailBytes.isNotEmpty) {
-            final supportDir = await _supportDirectory();
-            final cacheDir = Directory(p.join(supportDir.path, 'tag_probe_cache'));
-            final ext = p.extension(uri.path).isNotEmpty
-                ? p.extension(uri.path)
-                : '.mp3';
-            final headerKey = _headersKey(headers);
-            final name = fnv1a32Hex('remote:${uri.toString()}:$headerKey');
-            final outFile = File(
-              p.join(cacheDir.path, '${name}_tail${ext.toLowerCase()}'),
-            );
-            await outFile.writeAsBytes(tailBytes);
-            return outFile;
-          }
-        }
-      }
+      if (existing != null) return existing;
 
       final support = await _supportDirectory();
       final cacheDir = Directory(p.join(support.path, 'tag_probe_cache'));
@@ -1135,14 +1054,6 @@ class TagProbeService {
       if (body == null) return null;
       final status = res.statusCode ?? 0;
       if (status >= 400) return null;
-      // A 200 response (instead of 206 Partial Content) means the server
-      // ignored our `Range: bytes=-N` header and is streaming the whole file
-      // from byte 0. Taking the first N bytes would give us the *head*, not
-      // the tail — exactly the wrong bytes for M4A/AAC whose moov atom lives
-      // at the end. Stream the entire body through a sliding window and keep
-      // only the last `maxBytes` bytes.
-      final serverSupportsRange = status == HttpStatus.partialContent;
-
       if (await tmp.exists()) {
         try {
           await tmp.delete();
@@ -1150,64 +1061,23 @@ class TagProbeService {
       }
 
       final sink = tmp.openWrite(mode: FileMode.write);
+      var written = 0;
       try {
-        if (serverSupportsRange) {
-          var written = 0;
-          await for (final chunk in body.stream) {
-            if (chunk.isEmpty) continue;
-            final left = maxBytes - written;
-            if (left <= 0) {
-              cancelToken.cancel();
-              break;
-            }
-            if (chunk.length <= left) {
-              sink.add(chunk);
-              written += chunk.length;
-            } else {
-              sink.add(chunk.sublist(0, left));
-              written += left;
-              cancelToken.cancel();
-              break;
-            }
+        await for (final chunk in body.stream) {
+          if (chunk.isEmpty) continue;
+          final left = maxBytes - written;
+          if (left <= 0) {
+            cancelToken.cancel();
+            break;
           }
-        } else {
-          // The server ignores Range and sends the whole file. Two birds with
-          // one stream: write the complete file to the head cache (so future
-          // probes — head or tail — can read it directly without another
-          // download), and keep a sliding window of the last `maxBytes` for
-          // the tail cache we're about to return.
-          final headOut = File(
-            p.join(cacheDir.path, '$name${ext.toLowerCase()}'),
-          );
-          final headSink = headOut.openWrite(mode: FileMode.write);
-          final window = Queue<List<int>>();
-          var windowBytes = 0;
-          try {
-            await for (final chunk in body.stream) {
-              if (chunk.isEmpty) continue;
-              headSink.add(chunk);
-              window.add(chunk);
-              windowBytes += chunk.length;
-              while (windowBytes > maxBytes && window.isNotEmpty) {
-                final front = window.first;
-                if (windowBytes - front.length >= maxBytes) {
-                  windowBytes -= front.length;
-                  window.removeFirst();
-                } else {
-                  final trim = windowBytes - maxBytes;
-                  window.removeFirst();
-                  window.addFirst(front.sublist(trim));
-                  windowBytes = maxBytes;
-                  break;
-                }
-              }
-            }
-          } finally {
-            await headSink.flush();
-            await headSink.close();
-          }
-          for (final chunk in window) {
+          if (chunk.length <= left) {
             sink.add(chunk);
+            written += chunk.length;
+          } else {
+            sink.add(chunk.sublist(0, left));
+            written += left;
+            cancelToken.cancel();
+            break;
           }
         }
       } on DioException catch (e) {
