@@ -43,7 +43,7 @@ class LocalSourceSettings {
       includePaths: [],
       lastScanCount: 0,
       cacheArtwork: false,
-      readFullTagsOnScan: true,
+      readFullTagsOnScan: false,
       localMetadataConcurrency: 6,
     );
   }
@@ -94,7 +94,7 @@ class LocalSourceSettings {
           (json['includePaths'] as List<dynamic>?)?.cast<String>() ?? [],
       lastScanCount: json['lastScanCount'] as int? ?? 0,
       cacheArtwork: json['cacheArtwork'] as bool? ?? false,
-      readFullTagsOnScan: json['readFullTagsOnScan'] as bool? ?? true,
+      readFullTagsOnScan: json['readFullTagsOnScan'] as bool? ?? false,
       localMetadataConcurrency: json['localMetadataConcurrency'] as int? ?? 6,
     );
   }
